@@ -75,3 +75,10 @@ textarea{width:100%;border:1px solid #cfdedb;border-radius:12px;padding:12px;fon
 .empty-state{background:#fff;border:1px dashed #bfd4cf;border-radius:16px;padding:30px;text-align:center;color:#677}
 @media(max-width:700px){.timeline-filter{grid-template-columns:1fr}.span-2{grid-column:span 1}.timeline-meta{flex-direction:column;gap:3px}}
 @media print{.sidebar,.topbar,.page-head .actions,.timeline-filter,.btn{display:none!important}.main{margin:0!important}.content{padding:0!important}.section-card,.timeline-card{box-shadow:none}}
+
+/* V3.2 Clinical Intelligence */
+.clinical-metrics-v32{margin-bottom:18px}
+.clinical-actions-v32{margin-bottom:18px;display:flex;gap:10px;flex-wrap:wrap}
+@media print{
+  #nav-clinical-intelligence,.clinical-actions-v32{display:none!important}
+}

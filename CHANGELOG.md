@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.2.0
+- Added Morse Fall Scale with automatic scoring and risk category.
+- Added Braden pressure-ulcer risk assessment.
+- Added structured Pain Assessment.
+- Added resident Care Plans.
+- Added Doctor Visit Notes and follow-up date.
+- Added Nutrition Assessment.
+- Added Clinical Intelligence dashboard with high-risk summaries.
+- Added printable/PDF clinical assessment view.
+- Added Supabase migration 10_V32_CLINICAL_INTELLIGENCE.sql.
+
+# Changelog
+
 ## 3.1.0
 - Added Nursing Notes with permanent staff attribution.
 - Added Shift Handover with priority and pending tasks.
