@@ -542,3 +542,425 @@ openPatientProfile=async function(patientId,focusDocuments=false){
   }
 };
 /* ================= END V2.1 FIX ================= */
+
+
+/* ================= V3.1 CARE RECORDS + RESIDENT TIMELINE ================= */
+let nursingNotes=[],shiftHandovers=[],marRecords=[],specialistNotes=[];
+
+(function registerV31Pages(){
+  const additions={
+    Admin:['nursing','mar','timeline'],
+    Manager:['nursing','mar','timeline'],
+    Nurse:['nursing','mar','timeline'],
+    Caregiver:['nursing','timeline']
+  };
+  Object.entries(additions).forEach(([role,pages])=>{
+    rolePages[role]=rolePages[role]||[];
+    pages.forEach(p=>{if(!rolePages[role].includes(p))rolePages[role].push(p)});
+  });
+  Object.assign(labels,{
+    nursing:'Nursing & Handover',
+    mar:'Medication Administration',
+    timeline:'Resident Timeline'
+  });
+  Object.assign(navIcons,{nursing:'✎',mar:'☷',timeline:'↕'});
+})();
+
+const loadAllBeforeV31=loadAll;
+loadAll=async function(){
+  await loadAllBeforeV31();
+  const results=await Promise.all([
+    db.from('clinical_notes').select('*').order('recorded_at',{ascending:false}).limit(300),
+    db.from('shift_handovers').select('*').order('recorded_at',{ascending:false}).limit(300),
+    db.from('medication_administration').select('*').order('scheduled_at',{ascending:false}).limit(400),
+    db.from('care_specialist_notes').select('*').order('recorded_at',{ascending:false}).limit(300)
+  ]);
+  const error=results.find(r=>r.error)?.error;
+  if(error){
+    console.warn('V3.1 tables are not ready:',error.message);
+    nursingNotes=[];shiftHandovers=[];marRecords=[];specialistNotes=[];
+    return;
+  }
+  [nursingNotes,shiftHandovers,marRecords,specialistNotes]=results.map(r=>r.data||[]);
+};
+
+function v31PatientOptions(selected=''){
+  return patients.map(p=>`<option value="${esc(p.id)}" ${String(p.id)===String(selected)?'selected':''}>${esc(p.full_name)} · ${esc(p.patient_code||'')} · ${esc(p.room_no||'')}</option>`).join('');
+}
+function v31DateTime(value){
+  if(!value)return '—';
+  try{return new Date(value).toLocaleString('en-IN')}catch{return esc(value)}
+}
+function v31PageHead(title,subtitle,actions=''){
+  return `<div class="page-head"><div><h2>${esc(title)}</h2><div class="muted">${esc(subtitle)}</div></div><div class="actions">${actions}</div></div>`;
+}
+
+function render_nursing(){
+  const notes=nursingNotes.slice(0,100).map(n=>`<tr><td>${v31DateTime(n.recorded_at)}</td><td>${esc(pname(n.patient_id))}</td><td>${esc(n.note_type)}</td><td>${esc(n.note_text)}</td><td>${esc(n.observations||'—')}</td><td>${esc(staffName(n.recorded_by))}</td></tr>`).join('');
+  const handovers=shiftHandovers.slice(0,100).map(h=>`<tr><td>${v31DateTime(h.recorded_at)}</td><td>${esc(pname(h.patient_id))}</td><td>${esc(h.shift)}</td><td><span class="tag ${h.priority==='Urgent'?'red':h.priority==='High'?'amber':'green'}">${esc(h.priority)}</span></td><td>${esc(h.summary)}</td><td>${esc(h.pending_tasks||'—')}</td><td>${esc(staffName(h.recorded_by))}</td></tr>`).join('');
+  return `${v31PageHead('Nursing & Shift Handover','Daily nursing documentation and continuity-of-care records',
+    `<button class="btn btn-secondary" id="addHandoverV31">+ Shift Handover</button><button class="btn btn-primary" id="addNursingV31">+ Nursing Note</button>`)}
+  <div class="section-card"><div class="section-title"><h3>Nursing Notes</h3><button class="btn btn-secondary btn-small" onclick="window.print()">Print</button></div>
+  <div class="table-wrap"><table><thead><tr><th>Date/Time</th><th>Patient</th><th>Type</th><th>Note</th><th>Observations</th><th>Recorded By</th></tr></thead><tbody>${notes||'<tr><td colspan="6">No nursing notes recorded.</td></tr>'}</tbody></table></div></div>
+  <div class="section-card"><div class="section-title"><h3>Shift Handover</h3></div>
+  <div class="table-wrap"><table><thead><tr><th>Date/Time</th><th>Patient</th><th>Shift</th><th>Priority</th><th>Summary</th><th>Pending Tasks</th><th>Recorded By</th></tr></thead><tbody>${handovers||'<tr><td colspan="7">No handover records.</td></tr>'}</tbody></table></div></div>`;
+}
+
+function openNursingNoteV31(){
+  modal(`<div class="modal-head"><div><h3>Add Nursing Note</h3><div class="muted">Permanent clinical record</div></div><button class="close">×</button></div>
+  <div class="form-grid">
+   <div class="field"><label>Patient</label><select id="v31NPatient">${v31PatientOptions()}</select></div>
+   ${selectWithValue('Note Type','v31NType',['General Observation','Doctor Round','Physiotherapy','Wound Care','Behaviour','Nutrition','Sleep','Elimination','Other'],'General Observation')}
+   <div class="field span-2"><label>Nursing Note</label><textarea id="v31NText" rows="5"></textarea></div>
+   <div class="field span-2"><label>Observations / Follow-up</label><textarea id="v31NObs" rows="3"></textarea></div>
+  </div><div class="actions right"><button class="btn btn-secondary close-v31">Cancel</button><button class="btn btn-primary" id="saveNursingV31">Save Note</button></div>`);
+  document.querySelector('.close-v31').onclick=closeModal;
+  $('saveNursingV31').onclick=async()=>{
+    try{
+      const note_text=$('v31NText').value.trim();
+      if(!note_text)throw new Error('Enter the nursing note.');
+      const {error}=await db.from('clinical_notes').insert({
+        patient_id:$('v31NPatient').value,note_type:$('v31NType').value,note_text,
+        observations:$('v31NObs').value.trim()||null,recorded_by:me.id
+      });
+      if(error)throw error;closeModal();await loadAll();render();alert('Nursing note saved successfully.');
+    }catch(e){showError(e)}
+  };
+}
+function openHandoverV31(){
+  modal(`<div class="modal-head"><div><h3>Add Shift Handover</h3><div class="muted">Record pending care and risks for the next shift</div></div><button class="close">×</button></div>
+  <div class="form-grid">
+   <div class="field"><label>Patient</label><select id="v31HPatient">${v31PatientOptions()}</select></div>
+   ${selectWithValue('Shift','v31HShift',['Morning','Afternoon','Night'],'Morning')}
+   ${selectWithValue('Priority','v31HPriority',['Routine','High','Urgent'],'Routine')}
+   <div class="field span-2"><label>Handover Summary</label><textarea id="v31HSummary" rows="4"></textarea></div>
+   <div class="field span-2"><label>Pending Tasks / Follow-up</label><textarea id="v31HTasks" rows="3"></textarea></div>
+  </div><div class="actions right"><button class="btn btn-secondary close-v31">Cancel</button><button class="btn btn-primary" id="saveHandoverV31">Save Handover</button></div>`);
+  document.querySelector('.close-v31').onclick=closeModal;
+  $('saveHandoverV31').onclick=async()=>{
+    try{
+      const summary=$('v31HSummary').value.trim();if(!summary)throw new Error('Enter the handover summary.');
+      const {error}=await db.from('shift_handovers').insert({
+        patient_id:$('v31HPatient').value,shift:$('v31HShift').value,priority:$('v31HPriority').value,
+        summary,pending_tasks:$('v31HTasks').value.trim()||null,recorded_by:me.id
+      });
+      if(error)throw error;closeModal();await loadAll();render();alert('Shift handover saved successfully.');
+    }catch(e){showError(e)}
+  };
+}
+
+function render_mar(){
+ const rows=marRecords.slice(0,200).map(r=>`<tr><td>${v31DateTime(r.scheduled_at)}</td><td>${esc(pname(r.patient_id))}</td><td><b>${esc(r.medicine_name)}</b><br><small>${esc(r.dose||'')} ${esc(r.route||'')}</small></td><td><span class="tag ${r.status==='Given'?'green':r.status==='Missed'?'red':'amber'}">${esc(r.status)}</span></td><td>${v31DateTime(r.administered_at)}</td><td>${esc(r.remarks||'—')}</td><td>${esc(staffName(r.recorded_by))}</td></tr>`).join('');
+ return `${v31PageHead('Medication Administration Record','Scheduled, administered, withheld and missed doses',
+ `<button class="btn btn-secondary" id="printMarV31">Print MAR</button><button class="btn btn-primary" id="addMarV31">+ Record Medication</button>`)}
+ <div class="table-wrap"><table><thead><tr><th>Scheduled</th><th>Patient</th><th>Medicine</th><th>Status</th><th>Administered</th><th>Remarks</th><th>Recorded By</th></tr></thead><tbody>${rows||'<tr><td colspan="7">No MAR records.</td></tr>'}</tbody></table></div>`;
+}
+function openMarV31(){
+ const now=new Date();now.setMinutes(now.getMinutes()-now.getTimezoneOffset());const dt=now.toISOString().slice(0,16);
+ modal(`<div class="modal-head"><div><h3>Medication Administration</h3><div class="muted">Record each dose without overwriting history</div></div><button class="close">×</button></div>
+ <div class="form-grid">
+  <div class="field"><label>Patient</label><select id="v31MPatient">${v31PatientOptions()}</select></div>
+  ${field('Medicine','v31MMedicine')}
+  ${field('Dose','v31MDose')}
+  ${selectWithValue('Route','v31MRoute',['Oral','IV','IM','SC','Topical','Inhalation','Other'],'Oral')}
+  <div class="field"><label>Scheduled At</label><input id="v31MScheduled" type="datetime-local" value="${dt}"></div>
+  ${selectWithValue('Status','v31MStatus',['Given','Pending','Withheld','Missed','Refused'],'Given')}
+  <div class="field span-2"><label>Remarks / Reason</label><textarea id="v31MRemarks" rows="3"></textarea></div>
+ </div><div class="actions right"><button class="btn btn-secondary close-v31">Cancel</button><button class="btn btn-primary" id="saveMarV31">Save MAR</button></div>`);
+ document.querySelector('.close-v31').onclick=closeModal;
+ $('saveMarV31').onclick=async()=>{
+  try{
+   const medicine_name=$('v31MMedicine').value.trim();if(!medicine_name)throw new Error('Enter medicine name.');
+   const status=$('v31MStatus').value;
+   const {error}=await db.from('medication_administration').insert({
+    patient_id:$('v31MPatient').value,medicine_name,dose:$('v31MDose').value.trim()||null,
+    route:$('v31MRoute').value,scheduled_at:new Date($('v31MScheduled').value).toISOString(),
+    administered_at:status==='Given'?new Date().toISOString():null,status,
+    remarks:$('v31MRemarks').value.trim()||null,recorded_by:me.id
+   });
+   if(error)throw error;closeModal();await loadAll();render();alert('Medication administration saved.');
+  }catch(e){showError(e)}
+ };
+}
+
+function timelineEventsV31(patientId){
+ const events=[];
+ vitals.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.recorded_at,type:'Vital Signs',title:`BP ${x.systolic_bp||'-'}/${x.diastolic_bp||'-'} · SpO₂ ${x.spo2||'-'}% · Sugar ${x.sugar_value||'-'}`,by:staffName(x.recorded_by)}));
+ care.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.recorded_at,type:'Daily Care',title:x.care_type||x.notes||'Care recorded',by:staffName(x.recorded_by)}));
+ incidents.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.incident_at,type:'Incident',title:`${x.incident_type}: ${x.description||''}`,by:staffName(x.recorded_by)}));
+ documents.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.uploaded_at,type:'Document',title:`${x.category}: ${x.title||x.file_name||''}`,by:staffName(x.uploaded_by)}));
+ billing.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.recorded_at,type:'Billing',title:`${x.transaction_type} ₹${Number(x.amount||0).toLocaleString('en-IN')}`,by:staffName(x.recorded_by)}));
+ nursingNotes.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.recorded_at,type:x.note_type,title:x.note_text,by:staffName(x.recorded_by)}));
+ shiftHandovers.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.recorded_at,type:`${x.shift} Handover`,title:x.summary,by:staffName(x.recorded_by)}));
+ marRecords.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.administered_at||x.scheduled_at,type:'MAR',title:`${x.medicine_name} ${x.dose||''} — ${x.status}`,by:staffName(x.recorded_by)}));
+ specialistNotes.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.recorded_at,type:x.note_type,title:`${x.title||''} ${x.notes||''}`,by:staffName(x.recorded_by)}));
+ return events.sort((a,b)=>new Date(b.at)-new Date(a.at));
+}
+function render_timeline(){
+ const pid=patients[0]?.id||'';
+ const options=v31PatientOptions(pid);
+ return `${v31PageHead('Resident Timeline','One chronological view of clinical, care, incident, document and financial events',
+ `<button class="btn btn-secondary" id="printTimelineV31">Print / PDF</button>`)}
+ <div class="timeline-filter card"><div class="field"><label>Patient</label><select id="timelinePatientV31">${options}</select></div><div class="field"><label>Event Type</label><select id="timelineTypeV31"><option value="all">All Events</option><option>Vital Signs</option><option>Daily Care</option><option>Incident</option><option>Document</option><option>Billing</option><option>MAR</option></select></div></div>
+ <div id="timelineBodyV31">${renderTimelineBodyV31(pid,'all')}</div>`;
+}
+function renderTimelineBodyV31(patientId,type='all'){
+ const rows=timelineEventsV31(patientId).filter(e=>type==='all'||e.type===type);
+ return `<div class="resident-timeline">${rows.map(e=>`<article class="timeline-entry"><div class="timeline-dot"></div><div class="timeline-card"><div class="timeline-meta"><b>${esc(e.type)}</b><span>${v31DateTime(e.at)}</span></div><div>${esc(e.title)}</div><small class="muted">Recorded by ${esc(e.by)}</small></div></article>`).join('')||'<div class="empty-state">No timeline events for this patient.</div>'}</div>`;
+}
+function refreshTimelineV31(){
+ const pid=$('timelinePatientV31')?.value,type=$('timelineTypeV31')?.value||'all';
+ if($('timelineBodyV31'))$('timelineBodyV31').innerHTML=renderTimelineBodyV31(pid,type);
+}
+
+const bindPageActionsBeforeV31=bindPageActions;
+bindPageActions=function(){
+ bindPageActionsBeforeV31();
+ $('addNursingV31')?.addEventListener('click',openNursingNoteV31);
+ $('addHandoverV31')?.addEventListener('click',openHandoverV31);
+ $('addMarV31')?.addEventListener('click',openMarV31);
+ $('printMarV31')?.addEventListener('click',()=>window.print());
+ $('timelinePatientV31')?.addEventListener('change',refreshTimelineV31);
+ $('timelineTypeV31')?.addEventListener('change',refreshTimelineV31);
+ $('printTimelineV31')?.addEventListener('click',()=>window.print());
+};
+/* ================= END V3.1 ================= */
+
+
+/* ================= V3.2 CLINICAL INTELLIGENCE ================= */
+let carePlans=[],riskAssessments=[],doctorNotes=[],nutritionAssessments=[];
+
+(function registerV32Pages(){
+  const additions={
+    Admin:['clinical-intelligence'],
+    Manager:['clinical-intelligence'],
+    Nurse:['clinical-intelligence']
+  };
+  Object.entries(additions).forEach(([role,pages])=>{
+    rolePages[role]=rolePages[role]||[];
+    pages.forEach(p=>{if(!rolePages[role].includes(p))rolePages[role].push(p)});
+  });
+  labels['clinical-intelligence']='Clinical Intelligence';
+  navIcons['clinical-intelligence']='◆';
+})();
+
+const loadAllBeforeV32=loadAll;
+loadAll=async function(){
+  await loadAllBeforeV32();
+  const results=await Promise.all([
+    db.from('care_plans').select('*').order('updated_at',{ascending:false}).limit(300),
+    db.from('risk_assessments').select('*').order('assessed_at',{ascending:false}).limit(500),
+    db.from('doctor_visit_notes').select('*').order('visit_at',{ascending:false}).limit(300),
+    db.from('nutrition_assessments').select('*').order('assessed_at',{ascending:false}).limit(300)
+  ]);
+  const error=results.find(r=>r.error)?.error;
+  if(error){
+    console.warn('V3.2 tables are not ready:',error.message);
+    carePlans=[];riskAssessments=[];doctorNotes=[];nutritionAssessments=[];
+    return;
+  }
+  [carePlans,riskAssessments,doctorNotes,nutritionAssessments]=results.map(r=>r.data||[]);
+};
+
+function calcMorseScoreV32(){
+  const fall=Number($('morseFallHistory')?.value||0);
+  const diagnosis=Number($('morseSecondaryDiagnosis')?.value||0);
+  const aid=Number($('morseAmbulatoryAid')?.value||0);
+  const iv=Number($('morseIvTherapy')?.value||0);
+  const gait=Number($('morseGait')?.value||0);
+  const mental=Number($('morseMentalStatus')?.value||0);
+  return fall+diagnosis+aid+iv+gait+mental;
+}
+function morseLevelV32(score){return score>=45?'High':score>=25?'Moderate':'Low'}
+function calcBradenScoreV32(){
+  return ['bradenSensory','bradenMoisture','bradenActivity','bradenMobility','bradenNutrition','bradenFriction']
+    .reduce((sum,id)=>sum+Number($(id)?.value||0),0);
+}
+function bradenLevelV32(score){return score<=9?'Very High':score<=12?'High':score<=14?'Moderate':score<=18?'At Risk':'Low'}
+function painLevelV32(score){return score>=7?'Severe':score>=4?'Moderate':score>=1?'Mild':'No Pain'}
+
+function latestRiskForPatientV32(patientId,type){
+  return riskAssessments.find(r=>r.patient_id===patientId&&r.assessment_type===type);
+}
+function render_clinical_intelligence(){
+  const highFall=patients.filter(p=>['High'].includes(latestRiskForPatientV32(p.id,'Morse Fall Scale')?.risk_level)).length;
+  const highBraden=patients.filter(p=>['High','Very High'].includes(latestRiskForPatientV32(p.id,'Braden Scale')?.risk_level)).length;
+  const severePain=patients.filter(p=>['Severe'].includes(latestRiskForPatientV32(p.id,'Pain Assessment')?.risk_level)).length;
+  const activePlans=carePlans.filter(p=>p.status==='Active').length;
+
+  const riskRows=riskAssessments.slice(0,120).map(r=>`<tr>
+   <td>${new Date(r.assessed_at).toLocaleString('en-IN')}</td>
+   <td>${esc(pname(r.patient_id))}</td>
+   <td>${esc(r.assessment_type)}</td>
+   <td>${esc(r.score)}</td>
+   <td><span class="tag ${['High','Very High','Severe'].includes(r.risk_level)?'red':r.risk_level==='Moderate'?'amber':'green'}">${esc(r.risk_level)}</span></td>
+   <td>${esc(staffName(r.assessed_by))}</td>
+   <td>${esc(r.remarks||'—')}</td></tr>`).join('');
+
+  const doctorRows=doctorNotes.slice(0,80).map(n=>`<tr>
+   <td>${new Date(n.visit_at).toLocaleString('en-IN')}</td>
+   <td>${esc(pname(n.patient_id))}</td>
+   <td>${esc(n.doctor_name)}</td>
+   <td>${esc(n.clinical_findings)}</td>
+   <td>${esc(n.advice||'—')}</td>
+   <td>${esc(n.next_review_date||'—')}</td></tr>`).join('');
+
+  return `<div class="page-head"><div><h2>Clinical Intelligence</h2><div class="muted">Structured risk assessments, care plans and doctor reviews</div></div>
+   <div class="actions"><button class="btn btn-secondary" id="printClinicalV32">Print / PDF</button><button class="btn btn-primary" id="addAssessmentV32">+ Assessment</button></div></div>
+   <div class="metrics clinical-metrics-v32">
+    ${metric('High Fall Risk',highFall,'Morse Scale','red','')}
+    ${metric('Pressure Ulcer Risk',highBraden,'Braden Scale','red','')}
+    ${metric('Severe Pain',severePain,'Immediate review','red','')}
+    ${metric('Active Care Plans',activePlans,'Current plans','','')}
+   </div>
+   <div class="actions clinical-actions-v32">
+    <button class="btn btn-secondary" id="addCarePlanV32">+ Care Plan</button>
+    <button class="btn btn-secondary" id="addDoctorNoteV32">+ Doctor Visit Note</button>
+    <button class="btn btn-secondary" id="addNutritionV32">+ Nutrition Assessment</button>
+   </div>
+   <div class="section-card"><div class="section-title"><h3>Recent Risk Assessments</h3></div>
+    <div class="table-wrap"><table><thead><tr><th>Date</th><th>Patient</th><th>Assessment</th><th>Score</th><th>Risk</th><th>Assessed By</th><th>Remarks</th></tr></thead><tbody>${riskRows||'<tr><td colspan="7">No assessments recorded.</td></tr>'}</tbody></table></div>
+   </div>
+   <div class="section-card"><div class="section-title"><h3>Doctor Visit Notes</h3></div>
+    <div class="table-wrap"><table><thead><tr><th>Visit</th><th>Patient</th><th>Doctor</th><th>Findings</th><th>Advice</th><th>Next Review</th></tr></thead><tbody>${doctorRows||'<tr><td colspan="6">No doctor visit notes.</td></tr>'}</tbody></table></div>
+   </div>`;
+}
+
+function openAssessmentV32(){
+  modal(`<div class="modal-head"><div><h3>Clinical Risk Assessment</h3><div class="muted">Morse, Braden or Pain Assessment</div></div><button class="close">×</button></div>
+   <div class="form-grid">
+    <div class="field"><label>Patient</label><select id="riskPatientV32">${v31PatientOptions()}</select></div>
+    <div class="field"><label>Assessment Type</label><select id="riskTypeV32"><option>Morse Fall Scale</option><option>Braden Scale</option><option>Pain Assessment</option></select></div>
+   </div>
+   <div id="riskFormV32"></div>
+   <div class="actions right"><button class="btn btn-secondary close-v32">Cancel</button><button class="btn btn-primary" id="saveRiskV32">Save Assessment</button></div>`);
+  document.querySelector('.close-v32').onclick=closeModal;
+  const renderRiskForm=()=>{
+    const t=$('riskTypeV32').value;
+    if(t==='Morse Fall Scale'){
+      $('riskFormV32').innerHTML=`<div class="form-grid">
+       ${selectWithValue('History of Falling','morseFallHistory',['0','25'],'0')}
+       ${selectWithValue('Secondary Diagnosis','morseSecondaryDiagnosis',['0','15'],'0')}
+       ${selectWithValue('Ambulatory Aid','morseAmbulatoryAid',['0','15','30'],'0')}
+       ${selectWithValue('IV / Heparin Lock','morseIvTherapy',['0','20'],'0')}
+       ${selectWithValue('Gait / Transfer','morseGait',['0','10','20'],'0')}
+       ${selectWithValue('Mental Status','morseMentalStatus',['0','15'],'0')}
+       <div class="field span-2"><label>Remarks</label><textarea id="riskRemarksV32" rows="3"></textarea></div></div>`;
+    }else if(t==='Braden Scale'){
+      $('riskFormV32').innerHTML=`<div class="form-grid">
+       ${selectWithValue('Sensory Perception','bradenSensory',['1','2','3','4'],'4')}
+       ${selectWithValue('Moisture','bradenMoisture',['1','2','3','4'],'4')}
+       ${selectWithValue('Activity','bradenActivity',['1','2','3','4'],'4')}
+       ${selectWithValue('Mobility','bradenMobility',['1','2','3','4'],'4')}
+       ${selectWithValue('Nutrition','bradenNutrition',['1','2','3','4'],'4')}
+       ${selectWithValue('Friction & Shear','bradenFriction',['1','2','3'],'3')}
+       <div class="field span-2"><label>Remarks</label><textarea id="riskRemarksV32" rows="3"></textarea></div></div>`;
+    }else{
+      $('riskFormV32').innerHTML=`<div class="form-grid">
+       <div class="field"><label>Pain Score (0–10)</label><input id="painScoreV32" type="number" min="0" max="10" value="0"></div>
+       <div class="field"><label>Location</label><input id="painLocationV32"></div>
+       <div class="field"><label>Nature</label><input id="painNatureV32" placeholder="Sharp, dull, burning..."></div>
+       <div class="field span-2"><label>Intervention / Remarks</label><textarea id="riskRemarksV32" rows="3"></textarea></div></div>`;
+    }
+  };
+  $('riskTypeV32').onchange=renderRiskForm;renderRiskForm();
+
+  $('saveRiskV32').onclick=async()=>{
+    try{
+      const type=$('riskTypeV32').value;let score=0,level='',details={};
+      if(type==='Morse Fall Scale'){score=calcMorseScoreV32();level=morseLevelV32(score)}
+      else if(type==='Braden Scale'){score=calcBradenScoreV32();level=bradenLevelV32(score)}
+      else{
+        score=Number($('painScoreV32').value||0);level=painLevelV32(score);
+        details={location:$('painLocationV32').value.trim(),nature:$('painNatureV32').value.trim()};
+      }
+      const {error}=await db.from('risk_assessments').insert({
+        patient_id:$('riskPatientV32').value,assessment_type:type,score,risk_level:level,
+        details,remarks:$('riskRemarksV32').value.trim()||null,assessed_by:me.id
+      });
+      if(error)throw error;closeModal();await loadAll();render();alert(`${type} saved. Score: ${score}. Risk: ${level}.`);
+    }catch(e){showError(e)}
+  };
+}
+
+function openCarePlanV32(){
+  modal(`<div class="modal-head"><div><h3>Resident Care Plan</h3></div><button class="close">×</button></div>
+   <div class="form-grid">
+    <div class="field"><label>Patient</label><select id="cpPatientV32">${v31PatientOptions()}</select></div>
+    ${selectWithValue('Status','cpStatusV32',['Active','On Hold','Completed'],'Active')}
+    <div class="field span-2"><label>Problems / Needs</label><textarea id="cpProblemsV32" rows="3"></textarea></div>
+    <div class="field span-2"><label>Goals</label><textarea id="cpGoalsV32" rows="3"></textarea></div>
+    <div class="field span-2"><label>Interventions</label><textarea id="cpInterventionsV32" rows="4"></textarea></div>
+    <div class="field span-2"><label>Evaluation / Review</label><textarea id="cpEvaluationV32" rows="3"></textarea></div>
+   </div><div class="actions right"><button class="btn btn-secondary close-v32">Cancel</button><button class="btn btn-primary" id="saveCarePlanV32">Save Care Plan</button></div>`);
+  document.querySelector('.close-v32').onclick=closeModal;
+  $('saveCarePlanV32').onclick=async()=>{
+    try{
+      const {error}=await db.from('care_plans').insert({
+        patient_id:$('cpPatientV32').value,status:$('cpStatusV32').value,
+        problems:$('cpProblemsV32').value.trim(),goals:$('cpGoalsV32').value.trim(),
+        interventions:$('cpInterventionsV32').value.trim(),evaluation:$('cpEvaluationV32').value.trim()||null,
+        created_by:me.id,updated_by:me.id
+      });
+      if(error)throw error;closeModal();await loadAll();render();alert('Care plan saved.');
+    }catch(e){showError(e)}
+  };
+}
+
+function openDoctorNoteV32(){
+  const today=new Date().toISOString().slice(0,10);
+  modal(`<div class="modal-head"><div><h3>Doctor Visit Note</h3></div><button class="close">×</button></div>
+   <div class="form-grid">
+    <div class="field"><label>Patient</label><select id="docPatientV32">${v31PatientOptions()}</select></div>
+    ${field('Doctor Name','docNameV32')}
+    <div class="field span-2"><label>Clinical Findings</label><textarea id="docFindingsV32" rows="4"></textarea></div>
+    <div class="field span-2"><label>Advice / Treatment</label><textarea id="docAdviceV32" rows="4"></textarea></div>
+    <div class="field"><label>Next Review Date</label><input id="docReviewV32" type="date" value="${today}"></div>
+   </div><div class="actions right"><button class="btn btn-secondary close-v32">Cancel</button><button class="btn btn-primary" id="saveDoctorV32">Save Note</button></div>`);
+  document.querySelector('.close-v32').onclick=closeModal;
+  $('saveDoctorV32').onclick=async()=>{
+    try{
+      const {error}=await db.from('doctor_visit_notes').insert({
+        patient_id:$('docPatientV32').value,doctor_name:$('docNameV32').value.trim(),
+        clinical_findings:$('docFindingsV32').value.trim(),advice:$('docAdviceV32').value.trim()||null,
+        next_review_date:$('docReviewV32').value||null,recorded_by:me.id
+      });
+      if(error)throw error;closeModal();await loadAll();render();alert('Doctor visit note saved.');
+    }catch(e){showError(e)}
+  };
+}
+
+function openNutritionV32(){
+  modal(`<div class="modal-head"><div><h3>Nutrition Assessment</h3></div><button class="close">×</button></div>
+   <div class="form-grid">
+    <div class="field"><label>Patient</label><select id="nutPatientV32">${v31PatientOptions()}</select></div>
+    ${selectWithValue('Appetite','nutAppetiteV32',['Good','Fair','Poor'],'Good')}
+    ${selectWithValue('Swallowing','nutSwallowV32',['Normal','Mild Difficulty','Severe Difficulty'],'Normal')}
+    ${selectWithValue('Diet Type','nutDietV32',['Regular','Diabetic','Renal','Soft','Liquid','Tube Feed','Other'],'Regular')}
+    <div class="field"><label>Weight Loss (kg)</label><input id="nutWeightLossV32" type="number" step="0.1" min="0"></div>
+    <div class="field span-2"><label>Recommendations</label><textarea id="nutRecommendationsV32" rows="4"></textarea></div>
+   </div><div class="actions right"><button class="btn btn-secondary close-v32">Cancel</button><button class="btn btn-primary" id="saveNutritionV32">Save Assessment</button></div>`);
+  document.querySelector('.close-v32').onclick=closeModal;
+  $('saveNutritionV32').onclick=async()=>{
+    try{
+      const {error}=await db.from('nutrition_assessments').insert({
+        patient_id:$('nutPatientV32').value,appetite:$('nutAppetiteV32').value,
+        swallowing:$('nutSwallowV32').value,diet_type:$('nutDietV32').value,
+        weight_loss_kg:Number($('nutWeightLossV32').value||0),
+        recommendations:$('nutRecommendationsV32').value.trim()||null,assessed_by:me.id
+      });
+      if(error)throw error;closeModal();await loadAll();render();alert('Nutrition assessment saved.');
+    }catch(e){showError(e)}
+  };
+}
+
+const bindPageActionsBeforeV32=bindPageActions;
+bindPageActions=function(){
+  bindPageActionsBeforeV32();
+  $('addAssessmentV32')?.addEventListener('click',openAssessmentV32);
+  $('addCarePlanV32')?.addEventListener('click',openCarePlanV32);
+  $('addDoctorNoteV32')?.addEventListener('click',openDoctorNoteV32);
+  $('addNutritionV32')?.addEventListener('click',openNutritionV32);
+  $('printClinicalV32')?.addEventListener('click',()=>window.print());
+};
+/* ================= END V3.2 ================= */

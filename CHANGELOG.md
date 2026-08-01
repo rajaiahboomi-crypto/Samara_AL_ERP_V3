@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.2.0
+- Added Morse Fall Scale with automatic scoring and risk category.
+- Added Braden pressure-ulcer risk assessment.
+- Added structured Pain Assessment.
+- Added resident Care Plans.
+- Added Doctor Visit Notes and follow-up date.
+- Added Nutrition Assessment.
+- Added Clinical Intelligence dashboard with high-risk summaries.
+- Added printable/PDF clinical assessment view.
+- Added Supabase migration 10_V32_CLINICAL_INTELLIGENCE.sql.
+
+# Changelog
+
+## 3.1.0
+- Added Nursing Notes with permanent staff attribution.
+- Added Shift Handover with priority and pending tasks.
+- Added Medication Administration Record (MAR).
+- Added unified Resident Timeline combining clinical, care, incident, document and billing events.
+- Added printable/PDF-friendly layouts.
+- Added Supabase migration 09_V31_CARE_TIMELINE.sql.
+
+# Changelog
+
 ## 2.4.0
 - Added secure Twilio WhatsApp and SMS delivery through Supabase Edge Functions.
 - Added Send Pending Now and per-message Send/Retry controls.
