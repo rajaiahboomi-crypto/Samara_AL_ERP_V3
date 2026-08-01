@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.1.0
+- Added Nursing Notes with permanent staff attribution.
+- Added Shift Handover with priority and pending tasks.
+- Added Medication Administration Record (MAR).
+- Added unified Resident Timeline combining clinical, care, incident, document and billing events.
+- Added printable/PDF-friendly layouts.
+- Added Supabase migration 09_V31_CARE_TIMELINE.sql.
+
+# Changelog
+
 ## 2.4.0
 - Added secure Twilio WhatsApp and SMS delivery through Supabase Edge Functions.
 - Added Send Pending Now and per-message Send/Retry controls.

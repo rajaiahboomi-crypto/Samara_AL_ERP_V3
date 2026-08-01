@@ -542,3 +542,186 @@ openPatientProfile=async function(patientId,focusDocuments=false){
   }
 };
 /* ================= END V2.1 FIX ================= */
+
+
+/* ================= V3.1 CARE RECORDS + RESIDENT TIMELINE ================= */
+let nursingNotes=[],shiftHandovers=[],marRecords=[],specialistNotes=[];
+
+(function registerV31Pages(){
+  const additions={
+    Admin:['nursing','mar','timeline'],
+    Manager:['nursing','mar','timeline'],
+    Nurse:['nursing','mar','timeline'],
+    Caregiver:['nursing','timeline']
+  };
+  Object.entries(additions).forEach(([role,pages])=>{
+    rolePages[role]=rolePages[role]||[];
+    pages.forEach(p=>{if(!rolePages[role].includes(p))rolePages[role].push(p)});
+  });
+  Object.assign(labels,{
+    nursing:'Nursing & Handover',
+    mar:'Medication Administration',
+    timeline:'Resident Timeline'
+  });
+  Object.assign(navIcons,{nursing:'✎',mar:'☷',timeline:'↕'});
+})();
+
+const loadAllBeforeV31=loadAll;
+loadAll=async function(){
+  await loadAllBeforeV31();
+  const results=await Promise.all([
+    db.from('clinical_notes').select('*').order('recorded_at',{ascending:false}).limit(300),
+    db.from('shift_handovers').select('*').order('recorded_at',{ascending:false}).limit(300),
+    db.from('medication_administration').select('*').order('scheduled_at',{ascending:false}).limit(400),
+    db.from('care_specialist_notes').select('*').order('recorded_at',{ascending:false}).limit(300)
+  ]);
+  const error=results.find(r=>r.error)?.error;
+  if(error){
+    console.warn('V3.1 tables are not ready:',error.message);
+    nursingNotes=[];shiftHandovers=[];marRecords=[];specialistNotes=[];
+    return;
+  }
+  [nursingNotes,shiftHandovers,marRecords,specialistNotes]=results.map(r=>r.data||[]);
+};
+
+function v31PatientOptions(selected=''){
+  return patients.map(p=>`<option value="${esc(p.id)}" ${String(p.id)===String(selected)?'selected':''}>${esc(p.full_name)} · ${esc(p.patient_code||'')} · ${esc(p.room_no||'')}</option>`).join('');
+}
+function v31DateTime(value){
+  if(!value)return '—';
+  try{return new Date(value).toLocaleString('en-IN')}catch{return esc(value)}
+}
+function v31PageHead(title,subtitle,actions=''){
+  return `<div class="page-head"><div><h2>${esc(title)}</h2><div class="muted">${esc(subtitle)}</div></div><div class="actions">${actions}</div></div>`;
+}
+
+function render_nursing(){
+  const notes=nursingNotes.slice(0,100).map(n=>`<tr><td>${v31DateTime(n.recorded_at)}</td><td>${esc(pname(n.patient_id))}</td><td>${esc(n.note_type)}</td><td>${esc(n.note_text)}</td><td>${esc(n.observations||'—')}</td><td>${esc(staffName(n.recorded_by))}</td></tr>`).join('');
+  const handovers=shiftHandovers.slice(0,100).map(h=>`<tr><td>${v31DateTime(h.recorded_at)}</td><td>${esc(pname(h.patient_id))}</td><td>${esc(h.shift)}</td><td><span class="tag ${h.priority==='Urgent'?'red':h.priority==='High'?'amber':'green'}">${esc(h.priority)}</span></td><td>${esc(h.summary)}</td><td>${esc(h.pending_tasks||'—')}</td><td>${esc(staffName(h.recorded_by))}</td></tr>`).join('');
+  return `${v31PageHead('Nursing & Shift Handover','Daily nursing documentation and continuity-of-care records',
+    `<button class="btn btn-secondary" id="addHandoverV31">+ Shift Handover</button><button class="btn btn-primary" id="addNursingV31">+ Nursing Note</button>`)}
+  <div class="section-card"><div class="section-title"><h3>Nursing Notes</h3><button class="btn btn-secondary btn-small" onclick="window.print()">Print</button></div>
+  <div class="table-wrap"><table><thead><tr><th>Date/Time</th><th>Patient</th><th>Type</th><th>Note</th><th>Observations</th><th>Recorded By</th></tr></thead><tbody>${notes||'<tr><td colspan="6">No nursing notes recorded.</td></tr>'}</tbody></table></div></div>
+  <div class="section-card"><div class="section-title"><h3>Shift Handover</h3></div>
+  <div class="table-wrap"><table><thead><tr><th>Date/Time</th><th>Patient</th><th>Shift</th><th>Priority</th><th>Summary</th><th>Pending Tasks</th><th>Recorded By</th></tr></thead><tbody>${handovers||'<tr><td colspan="7">No handover records.</td></tr>'}</tbody></table></div></div>`;
+}
+
+function openNursingNoteV31(){
+  modal(`<div class="modal-head"><div><h3>Add Nursing Note</h3><div class="muted">Permanent clinical record</div></div><button class="close">×</button></div>
+  <div class="form-grid">
+   <div class="field"><label>Patient</label><select id="v31NPatient">${v31PatientOptions()}</select></div>
+   ${selectWithValue('Note Type','v31NType',['General Observation','Doctor Round','Physiotherapy','Wound Care','Behaviour','Nutrition','Sleep','Elimination','Other'],'General Observation')}
+   <div class="field span-2"><label>Nursing Note</label><textarea id="v31NText" rows="5"></textarea></div>
+   <div class="field span-2"><label>Observations / Follow-up</label><textarea id="v31NObs" rows="3"></textarea></div>
+  </div><div class="actions right"><button class="btn btn-secondary close-v31">Cancel</button><button class="btn btn-primary" id="saveNursingV31">Save Note</button></div>`);
+  document.querySelector('.close-v31').onclick=closeModal;
+  $('saveNursingV31').onclick=async()=>{
+    try{
+      const note_text=$('v31NText').value.trim();
+      if(!note_text)throw new Error('Enter the nursing note.');
+      const {error}=await db.from('clinical_notes').insert({
+        patient_id:$('v31NPatient').value,note_type:$('v31NType').value,note_text,
+        observations:$('v31NObs').value.trim()||null,recorded_by:me.id
+      });
+      if(error)throw error;closeModal();await loadAll();render();alert('Nursing note saved successfully.');
+    }catch(e){showError(e)}
+  };
+}
+function openHandoverV31(){
+  modal(`<div class="modal-head"><div><h3>Add Shift Handover</h3><div class="muted">Record pending care and risks for the next shift</div></div><button class="close">×</button></div>
+  <div class="form-grid">
+   <div class="field"><label>Patient</label><select id="v31HPatient">${v31PatientOptions()}</select></div>
+   ${selectWithValue('Shift','v31HShift',['Morning','Afternoon','Night'],'Morning')}
+   ${selectWithValue('Priority','v31HPriority',['Routine','High','Urgent'],'Routine')}
+   <div class="field span-2"><label>Handover Summary</label><textarea id="v31HSummary" rows="4"></textarea></div>
+   <div class="field span-2"><label>Pending Tasks / Follow-up</label><textarea id="v31HTasks" rows="3"></textarea></div>
+  </div><div class="actions right"><button class="btn btn-secondary close-v31">Cancel</button><button class="btn btn-primary" id="saveHandoverV31">Save Handover</button></div>`);
+  document.querySelector('.close-v31').onclick=closeModal;
+  $('saveHandoverV31').onclick=async()=>{
+    try{
+      const summary=$('v31HSummary').value.trim();if(!summary)throw new Error('Enter the handover summary.');
+      const {error}=await db.from('shift_handovers').insert({
+        patient_id:$('v31HPatient').value,shift:$('v31HShift').value,priority:$('v31HPriority').value,
+        summary,pending_tasks:$('v31HTasks').value.trim()||null,recorded_by:me.id
+      });
+      if(error)throw error;closeModal();await loadAll();render();alert('Shift handover saved successfully.');
+    }catch(e){showError(e)}
+  };
+}
+
+function render_mar(){
+ const rows=marRecords.slice(0,200).map(r=>`<tr><td>${v31DateTime(r.scheduled_at)}</td><td>${esc(pname(r.patient_id))}</td><td><b>${esc(r.medicine_name)}</b><br><small>${esc(r.dose||'')} ${esc(r.route||'')}</small></td><td><span class="tag ${r.status==='Given'?'green':r.status==='Missed'?'red':'amber'}">${esc(r.status)}</span></td><td>${v31DateTime(r.administered_at)}</td><td>${esc(r.remarks||'—')}</td><td>${esc(staffName(r.recorded_by))}</td></tr>`).join('');
+ return `${v31PageHead('Medication Administration Record','Scheduled, administered, withheld and missed doses',
+ `<button class="btn btn-secondary" id="printMarV31">Print MAR</button><button class="btn btn-primary" id="addMarV31">+ Record Medication</button>`)}
+ <div class="table-wrap"><table><thead><tr><th>Scheduled</th><th>Patient</th><th>Medicine</th><th>Status</th><th>Administered</th><th>Remarks</th><th>Recorded By</th></tr></thead><tbody>${rows||'<tr><td colspan="7">No MAR records.</td></tr>'}</tbody></table></div>`;
+}
+function openMarV31(){
+ const now=new Date();now.setMinutes(now.getMinutes()-now.getTimezoneOffset());const dt=now.toISOString().slice(0,16);
+ modal(`<div class="modal-head"><div><h3>Medication Administration</h3><div class="muted">Record each dose without overwriting history</div></div><button class="close">×</button></div>
+ <div class="form-grid">
+  <div class="field"><label>Patient</label><select id="v31MPatient">${v31PatientOptions()}</select></div>
+  ${field('Medicine','v31MMedicine')}
+  ${field('Dose','v31MDose')}
+  ${selectWithValue('Route','v31MRoute',['Oral','IV','IM','SC','Topical','Inhalation','Other'],'Oral')}
+  <div class="field"><label>Scheduled At</label><input id="v31MScheduled" type="datetime-local" value="${dt}"></div>
+  ${selectWithValue('Status','v31MStatus',['Given','Pending','Withheld','Missed','Refused'],'Given')}
+  <div class="field span-2"><label>Remarks / Reason</label><textarea id="v31MRemarks" rows="3"></textarea></div>
+ </div><div class="actions right"><button class="btn btn-secondary close-v31">Cancel</button><button class="btn btn-primary" id="saveMarV31">Save MAR</button></div>`);
+ document.querySelector('.close-v31').onclick=closeModal;
+ $('saveMarV31').onclick=async()=>{
+  try{
+   const medicine_name=$('v31MMedicine').value.trim();if(!medicine_name)throw new Error('Enter medicine name.');
+   const status=$('v31MStatus').value;
+   const {error}=await db.from('medication_administration').insert({
+    patient_id:$('v31MPatient').value,medicine_name,dose:$('v31MDose').value.trim()||null,
+    route:$('v31MRoute').value,scheduled_at:new Date($('v31MScheduled').value).toISOString(),
+    administered_at:status==='Given'?new Date().toISOString():null,status,
+    remarks:$('v31MRemarks').value.trim()||null,recorded_by:me.id
+   });
+   if(error)throw error;closeModal();await loadAll();render();alert('Medication administration saved.');
+  }catch(e){showError(e)}
+ };
+}
+
+function timelineEventsV31(patientId){
+ const events=[];
+ vitals.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.recorded_at,type:'Vital Signs',title:`BP ${x.systolic_bp||'-'}/${x.diastolic_bp||'-'} · SpO₂ ${x.spo2||'-'}% · Sugar ${x.sugar_value||'-'}`,by:staffName(x.recorded_by)}));
+ care.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.recorded_at,type:'Daily Care',title:x.care_type||x.notes||'Care recorded',by:staffName(x.recorded_by)}));
+ incidents.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.incident_at,type:'Incident',title:`${x.incident_type}: ${x.description||''}`,by:staffName(x.recorded_by)}));
+ documents.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.uploaded_at,type:'Document',title:`${x.category}: ${x.title||x.file_name||''}`,by:staffName(x.uploaded_by)}));
+ billing.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.recorded_at,type:'Billing',title:`${x.transaction_type} ₹${Number(x.amount||0).toLocaleString('en-IN')}`,by:staffName(x.recorded_by)}));
+ nursingNotes.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.recorded_at,type:x.note_type,title:x.note_text,by:staffName(x.recorded_by)}));
+ shiftHandovers.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.recorded_at,type:`${x.shift} Handover`,title:x.summary,by:staffName(x.recorded_by)}));
+ marRecords.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.administered_at||x.scheduled_at,type:'MAR',title:`${x.medicine_name} ${x.dose||''} — ${x.status}`,by:staffName(x.recorded_by)}));
+ specialistNotes.filter(x=>x.patient_id===patientId).forEach(x=>events.push({at:x.recorded_at,type:x.note_type,title:`${x.title||''} ${x.notes||''}`,by:staffName(x.recorded_by)}));
+ return events.sort((a,b)=>new Date(b.at)-new Date(a.at));
+}
+function render_timeline(){
+ const pid=patients[0]?.id||'';
+ const options=v31PatientOptions(pid);
+ return `${v31PageHead('Resident Timeline','One chronological view of clinical, care, incident, document and financial events',
+ `<button class="btn btn-secondary" id="printTimelineV31">Print / PDF</button>`)}
+ <div class="timeline-filter card"><div class="field"><label>Patient</label><select id="timelinePatientV31">${options}</select></div><div class="field"><label>Event Type</label><select id="timelineTypeV31"><option value="all">All Events</option><option>Vital Signs</option><option>Daily Care</option><option>Incident</option><option>Document</option><option>Billing</option><option>MAR</option></select></div></div>
+ <div id="timelineBodyV31">${renderTimelineBodyV31(pid,'all')}</div>`;
+}
+function renderTimelineBodyV31(patientId,type='all'){
+ const rows=timelineEventsV31(patientId).filter(e=>type==='all'||e.type===type);
+ return `<div class="resident-timeline">${rows.map(e=>`<article class="timeline-entry"><div class="timeline-dot"></div><div class="timeline-card"><div class="timeline-meta"><b>${esc(e.type)}</b><span>${v31DateTime(e.at)}</span></div><div>${esc(e.title)}</div><small class="muted">Recorded by ${esc(e.by)}</small></div></article>`).join('')||'<div class="empty-state">No timeline events for this patient.</div>'}</div>`;
+}
+function refreshTimelineV31(){
+ const pid=$('timelinePatientV31')?.value,type=$('timelineTypeV31')?.value||'all';
+ if($('timelineBodyV31'))$('timelineBodyV31').innerHTML=renderTimelineBodyV31(pid,type);
+}
+
+const bindPageActionsBeforeV31=bindPageActions;
+bindPageActions=function(){
+ bindPageActionsBeforeV31();
+ $('addNursingV31')?.addEventListener('click',openNursingNoteV31);
+ $('addHandoverV31')?.addEventListener('click',openHandoverV31);
+ $('addMarV31')?.addEventListener('click',openMarV31);
+ $('printMarV31')?.addEventListener('click',()=>window.print());
+ $('timelinePatientV31')?.addEventListener('change',refreshTimelineV31);
+ $('timelineTypeV31')?.addEventListener('change',refreshTimelineV31);
+ $('printTimelineV31')?.addEventListener('click',()=>window.print());
+};
+/* ================= END V3.1 ================= */
